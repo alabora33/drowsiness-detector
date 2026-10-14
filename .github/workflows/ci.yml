@@ -4,13 +4,16 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Reused by the release workflow so a version is only published after
+  # exactly the same checks have passed.
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -39,3 +42,40 @@ jobs:
           ruff format --check .
       - name: Unit and integration tests
         run: pytest -v
+
+  docker:
+    name: Docker build and smoke test
+    runs-on: ubuntu-24.04
+    needs: test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build image (default config)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          push: false
+          tags: drowsiness-detector:ci
+          build-args: |
+            CONFIG_PATH=configs/default.yaml
+            APP_VERSION=ci-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test the container
+        run: ./scripts/container_smoke.sh drowsiness-detector:ci
+      - name: Build with another config and check it is baked in
+        run: |
+          docker buildx build --load --cache-from type=gha \
+            --build-arg CONFIG_PATH=configs/sensitive.yaml -t drowsiness-detector:ci-sensitive .
+          docker run --rm drowsiness-detector:ci-sensitive \
+            python -m app.config --check /app/config/config.yaml | tee check.txt
+          grep -q "ear_threshold=0.21" check.txt
+      - name: Invalid config must fail the build
+        run: |
+          if docker buildx build --cache-from type=gha \
+              --build-arg CONFIG_PATH=tests/fixtures/invalid_config.yaml .; then
+            echo "::error::build with an invalid config succeeded"
+            exit 1
+          fi
+          echo "Build failed as expected."

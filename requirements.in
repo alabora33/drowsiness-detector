@@ -1,0 +1,9 @@
+# Direct runtime dependencies. requirements.txt is the fully pinned lock
+# generated from this file (see README, "Bağımlılıkları güncelleme").
+fastapi==0.143.1
+uvicorn==0.54.0
+websockets==17.2
+pydantic==2.14.1
+PyYAML==6.0.3
+numpy==2.5.4
+mediapipe==1.1.0

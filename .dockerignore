@@ -1,0 +1,9 @@
+# Allowlist: only what the image needs is sent to the build context.
+*
+!app/
+!models/
+!configs/
+!requirements.txt
+# Allows building with the deliberately invalid test config (CI checks it fails).
+!tests/fixtures/*.yaml
+**/__pycache__
