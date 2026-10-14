@@ -23,11 +23,19 @@ jobs:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: requirements*.txt
+      # libgles2/libegl1: MediaPipe's native library. libgl1/libglib2.0-0t64:
+      # the GUI build of OpenCV that MediaPipe depends on (preinstalled on
+      # GitHub runners, listed explicitly so this also documents a clean setup).
+      - name: Install system libraries for MediaPipe and OpenCV
+        run: >-
+          sudo apt-get update -qq &&
+          sudo apt-get install -y -qq --no-install-recommends
+          libgles2 libegl1 libgl1 libglib2.0-0t64
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
       - name: Lint
         run: |
           ruff check .
           ruff format --check .
-      - name: Unit tests
+      - name: Unit and integration tests
         run: pytest -v
