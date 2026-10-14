@@ -1,0 +1,25 @@
+# Deliberately invalid: used to prove that an invalid config fails the Docker build.
+server:
+  host: 0.0.0.0
+  port: 8000
+camera:
+  max_fps: 10
+  frame_width: 640
+  frame_height: 480
+  jpeg_quality: 0.7
+detection:
+  model_path: models/face_landmarker.task
+  max_faces: 2
+  min_face_confidence: 0.5
+  ear_threshold: 2.0
+  min_closed_seconds: 1.5
+  no_face_grace_seconds: 1.0
+  perclos:
+    enabled: true
+    window_seconds: 30
+    threshold: 0.3
+alerts:
+  enabled: true
+  sound: true
+logging:
+  level: LOUD
