@@ -43,7 +43,9 @@ def test_normal_blink_does_not_warn(detector):
     feed(detector, OPEN, 0, 1, fps=10)
     blink = feed(detector, CLOSED, 1.1, 1.3, fps=10)
     assert blink.state is State.EYES_CLOSED
-    after = detector.update(OPEN, now=1.4)
+    # The blink only ends after the eyes stay open for min_open_seconds (0.2 s).
+    assert detector.update(OPEN, now=1.5).state is State.EYES_CLOSED
+    after = detector.update(OPEN, now=1.75)
     assert after.state is State.AWAKE
     assert after.closed_seconds == 0
 
@@ -59,13 +61,46 @@ def test_prolonged_closure_warns_after_min_closed_seconds(detector):
     assert warning.alert is True
 
 
-def test_reopening_eyes_recovers(detector):
-    feed(detector, CLOSED, 0, 3, fps=10)
-    result = detector.update(OPEN, now=3.1)
-    assert result.state is State.AWAKE
-    assert result.alert is False
+def test_genuine_reopening_is_recognized_after_min_open_seconds(detector):
+    assert feed(detector, CLOSED, 0, 2, fps=4).state is State.DROWSINESS_WARNING
+    # First open frame: could be noise, the warning is held.
+    held = detector.update(OPEN, now=2.25)
+    assert held.state is State.DROWSINESS_WARNING
+    assert held.alert is True
+    # Open for 0.25 s >= min_open_seconds (0.2 s): recognized on the next frame.
+    reopened = detector.update(OPEN, now=2.5)
+    assert reopened.state is State.AWAKE
+    assert reopened.alert is False
+    assert reopened.closed_seconds == 0
     # A new closure starts counting from zero again.
-    assert detector.update(CLOSED, now=3.2).closed_seconds == 0
+    assert detector.update(CLOSED, now=2.75).closed_seconds == 0
+
+
+def test_isolated_noisy_frames_do_not_reset_closure(detector):
+    """Regression: 3 s of closed eyes with two noisy 'open' frames must still warn."""
+    ears = [CLOSED] * 30  # 10 fps
+    ears[10] = ears[22] = DEFAULTS.ear_threshold + 0.01  # just above the threshold
+    results = [detector.update(ear, now=i / 10) for i, ear in enumerate(ears)]
+    assert all(r.state is not State.AWAKE for r in results)
+    assert results[15].state is State.DROWSINESS_WARNING  # at 1.5 s
+    assert all(r.state is State.DROWSINESS_WARNING for r in results[15:])
+    assert results[-1].closed_seconds == pytest.approx(2.9)
+
+
+def test_noise_burst_shorter_than_min_open_seconds_is_ignored_at_30_fps(detector):
+    feed(detector, CLOSED, 0, 1.0, fps=30)
+    for i in range(1, 4):  # three consecutive open frames spanning ~0.07 s
+        detector.update(OPEN, now=1.0 + i / 30)
+    result = feed(detector, CLOSED, 1.2, 1.6, fps=30)
+    assert result.state is State.DROWSINESS_WARNING
+    # The episode started at 0 s: the noise burst did not restart the timer.
+    assert result.closed_seconds > 1.5
+
+
+def test_min_open_seconds_zero_ends_closure_on_first_open_frame():
+    detector = DrowsinessDetector(make_config(min_open_seconds=0), alerts_enabled=True)
+    feed(detector, CLOSED, 0, 1, fps=10)
+    assert detector.update(OPEN, now=1.1).state is State.AWAKE
 
 
 @pytest.mark.parametrize("fps", [2, 5, 30])

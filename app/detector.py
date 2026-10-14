@@ -2,6 +2,10 @@
 
 All durations use the caller-supplied timestamp (seconds, monotonic), never
 frame counts, so behaviour is the same at 5 fps and at 30 fps.
+
+A closure ("episode") starts at the first frame with EAR below the threshold
+and only ends once the eyes have stayed open for `min_open_seconds`. Single
+noisy frames during a long closure therefore don't restart the timer.
 """
 
 from __future__ import annotations
@@ -51,7 +55,8 @@ class DrowsinessDetector:
     def __init__(self, config: DetectionConfig, alerts_enabled: bool) -> None:
         self._cfg = config
         self._alerts_enabled = alerts_enabled
-        self._closed_since: float | None = None
+        self._closed_since: float | None = None  # start of the current closure episode
+        self._open_since: float | None = None  # first open frame within that episode
         self._last_face_at: float | None = None
         self._state = State.NO_FACE_DETECTED
         self._samples: deque[tuple[float, bool]] = deque()  # (timestamp, eyes_closed)
@@ -63,20 +68,29 @@ class DrowsinessDetector:
 
         self._last_face_at = now
         closed = ear < self._cfg.ear_threshold
+        # PERCLOS uses the raw per-frame measurement, without noise filtering.
         self._record_sample(now, closed)
 
         if closed:
             if self._closed_since is None:
                 self._closed_since = now
-            closed_seconds = now - self._closed_since
-        else:
-            self._closed_since = None
-            closed_seconds = 0.0
+            self._open_since = None
+        elif self._closed_since is not None:
+            # Eyes look open during a closure: only end it once they have
+            # stayed open for min_open_seconds (filters isolated noisy frames).
+            if self._open_since is None:
+                self._open_since = now
+            if now - self._open_since >= self._cfg.min_open_seconds:
+                self._closed_since = None
+                self._open_since = None
+
+        in_closure = self._closed_since is not None
+        closed_seconds = now - self._closed_since if in_closure else 0.0
 
         perclos = self._perclos()
         if closed_seconds >= self._cfg.min_closed_seconds or self._perclos_exceeded(perclos):
             state = State.DROWSINESS_WARNING
-        elif closed:
+        elif in_closure:
             state = State.EYES_CLOSED
         else:
             state = State.AWAKE
@@ -97,6 +111,7 @@ class DrowsinessDetector:
             return self._result(state, None, closed_seconds, self._perclos(), 0)
 
         self._closed_since = None
+        self._open_since = None
         return self._result(State.NO_FACE_DETECTED, None, 0.0, None, 0)
 
     def _record_sample(self, now: float, closed: bool) -> None:
