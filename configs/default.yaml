@@ -18,6 +18,7 @@ detection:
   ear_threshold: 0.18    # eye aspect ratio below this counts as "closed"
   min_closed_seconds: 1.5    # continuous closure before DROWSINESS_WARNING
   no_face_grace_seconds: 1.0 # short face-tracking drops are ignored
+  low_light_threshold: 40   # mean frame brightness (0-255) below this is reported as low light
   perclos:
     enabled: true
     window_seconds: 30   # rolling window for percentage of eye closure

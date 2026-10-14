@@ -58,6 +58,7 @@ class DetectionConfig(_Section):
     ear_threshold: float = Field(ge=0.05, le=0.4)
     min_closed_seconds: float = Field(ge=0.2, le=10)
     no_face_grace_seconds: float = Field(ge=0, le=10)
+    low_light_threshold: float = Field(ge=0, le=255)
     perclos: PerclosConfig
 
 
