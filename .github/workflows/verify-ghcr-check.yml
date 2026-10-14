@@ -1,0 +1,31 @@
+name: Verify GHCR check (temporary)
+
+# TEMPORARY, read-only probe for the first-release case: runs the R1 check
+# against our not-yet-published package to record what GHCR answers for a
+# package that has never been created. It never builds or pushes anything.
+# Delete this file before PR #5 is merged.
+on:
+  push:
+    branches: [feat/ghcr-immutability]
+    paths: [.github/workflows/verify-ghcr-check.yml]
+
+permissions:
+  contents: read
+  # Same permission as the release job: needed to request the push-scoped
+  # registry token the check relies on. Nothing is pushed.
+  packages: write
+
+jobs:
+  probe:
+    name: Probe first-release response
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run the version check (no build, no push)
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          python3 scripts/check_version_absent.py --repository "${GITHUB_REPOSITORY,,}" --tag 0.1.0
+          echo "exit code: $? (0 = ABSENT, 1 = EXISTS, 2 = UNCERTAIN)"
