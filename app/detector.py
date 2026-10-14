@@ -34,6 +34,11 @@ class State(StrEnum):
     NO_FACE_DETECTED = "NO_FACE_DETECTED"
 
 
+class WarningReason(StrEnum):
+    CONTINUOUS_CLOSURE = "continuous_closure"  # closure lasted min_closed_seconds
+    PERCLOS = "perclos"  # eyes closed too large a share of the PERCLOS window
+
+
 @dataclass(frozen=True)
 class DetectionResult:
     state: State
@@ -42,10 +47,13 @@ class DetectionResult:
     perclos: float | None
     face_count: int
     alert: bool
+    # Why the state is DROWSINESS_WARNING; empty for every other state.
+    warning_reasons: tuple[WarningReason, ...] = ()
 
     def to_dict(self) -> dict:
         data = asdict(self)
         data["state"] = self.state.value
+        data["warning_reasons"] = [reason.value for reason in self.warning_reasons]
         return data
 
 
@@ -59,6 +67,7 @@ class DrowsinessDetector:
         self._open_since: float | None = None  # first open frame within that episode
         self._last_face_at: float | None = None
         self._state = State.NO_FACE_DETECTED
+        self._reasons: tuple[WarningReason, ...] = ()
         self._samples: deque[tuple[float, bool]] = deque()  # (timestamp, eyes_closed)
 
     def update(self, ear: float | None, now: float, face_count: int = 1) -> DetectionResult:
@@ -88,7 +97,7 @@ class DrowsinessDetector:
         closed_seconds = now - self._closed_since if in_closure else 0.0
 
         perclos = self._perclos()
-        if closed_seconds >= self._cfg.min_closed_seconds or self._perclos_exceeded(perclos):
+        if self._warning_reasons(closed_seconds, perclos):
             state = State.DROWSINESS_WARNING
         elif in_closure:
             state = State.EYES_CLOSED
@@ -138,6 +147,16 @@ class DrowsinessDetector:
     def _perclos_exceeded(self, perclos: float | None) -> bool:
         return perclos is not None and perclos >= self._cfg.perclos.threshold
 
+    def _warning_reasons(
+        self, closed_seconds: float, perclos: float | None
+    ) -> tuple[WarningReason, ...]:
+        reasons = []
+        if closed_seconds >= self._cfg.min_closed_seconds:
+            reasons.append(WarningReason.CONTINUOUS_CLOSURE)
+        if self._perclos_exceeded(perclos):
+            reasons.append(WarningReason.PERCLOS)
+        return tuple(reasons)
+
     def _result(
         self,
         state: State,
@@ -146,15 +165,23 @@ class DrowsinessDetector:
         perclos: float | None,
         face_count: int,
     ) -> DetectionResult:
-        if state is not self._state:
+        reasons = ()
+        if state is State.DROWSINESS_WARNING:
+            reasons = self._warning_reasons(closed_seconds, perclos)
+        # Also log when a warning's reasons change (e.g. a closure warning that
+        # is held by PERCLOS after the eyes reopen), not only state changes.
+        if state is not self._state or reasons != self._reasons:
             logger.info(
-                "State %s -> %s (ear=%s, closed=%.2fs)",
+                "State %s -> %s (ear=%s, closed=%.2fs, perclos=%s, reasons=%s)",
                 self._state,
                 state,
-                ear and round(ear, 3),
+                None if ear is None else round(ear, 3),
                 closed_seconds,
+                None if perclos is None else round(perclos, 3),
+                ",".join(reasons) or "-",
             )
             self._state = state
+            self._reasons = reasons
         return DetectionResult(
             state=state,
             ear=ear,
@@ -162,4 +189,5 @@ class DrowsinessDetector:
             perclos=None if perclos is None else round(perclos, 3),
             face_count=face_count,
             alert=self._alerts_enabled and state is State.DROWSINESS_WARNING,
+            warning_reasons=reasons,
         )
