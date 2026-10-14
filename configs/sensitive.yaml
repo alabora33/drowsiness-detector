@@ -1,0 +1,31 @@
+# Sensitive profile: warns earlier and treats slightly narrower eyes as closed.
+# Expect more false alarms (e.g. when smiling or looking down).
+
+server:
+  host: 0.0.0.0
+  port: 8000
+
+camera:
+  max_fps: 15
+  frame_width: 640
+  frame_height: 480
+  jpeg_quality: 0.7
+
+detection:
+  model_path: models/face_landmarker.task
+  max_faces: 2
+  min_face_confidence: 0.5
+  ear_threshold: 0.21
+  min_closed_seconds: 0.8
+  no_face_grace_seconds: 0.5
+  perclos:
+    enabled: true
+    window_seconds: 20
+    threshold: 0.2
+
+alerts:
+  enabled: true
+  sound: true
+
+logging:
+  level: DEBUG
