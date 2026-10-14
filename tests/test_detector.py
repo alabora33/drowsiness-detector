@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from app.config import DetectionConfig, load_config
-from app.detector import DrowsinessDetector, State
+from app.detector import DrowsinessDetector, State, WarningReason
 
 OPEN = 0.30
 CLOSED = 0.10
@@ -180,3 +180,83 @@ def test_perclos_ignores_long_gaps_between_frames():
     # 10 s with no frames (e.g. hidden tab) must not count as 10 s of closed eyes.
     result = feed(detector, OPEN, 24.2, 26, fps=5)
     assert result.perclos < 0.1
+
+
+# --- Warning reasons -------------------------------------------------------
+# Times use 0.25 s steps (4 fps) so they are exact in binary floating point.
+
+CONTINUOUS = WarningReason.CONTINUOUS_CLOSURE
+PERCLOS = WarningReason.PERCLOS
+
+
+def test_continuous_closure_warning_reason(detector):
+    almost = feed(detector, CLOSED, 0, 1.25, fps=4)
+    assert almost.state is State.EYES_CLOSED
+    assert almost.warning_reasons == ()
+    warning = detector.update(CLOSED, now=1.5)
+    assert warning.state is State.DROWSINESS_WARNING
+    assert warning.warning_reasons == (CONTINUOUS,)
+
+
+def test_perclos_triggers_warning_while_current_closure_is_short():
+    """The real-webcam case: warnings at closed=0.40 s / 0.87 s came from PERCLOS."""
+    detector = DrowsinessDetector(make_config(perclos_enabled=True), alerts_enabled=True)
+    results = []
+    t = 0.0
+    while t < 25:
+        # 1 s closed, 1.5 s open: ~40 % closed, no closure reaches 1.5 s.
+        results.append(feed(detector, CLOSED, t, t + 0.75, fps=4))
+        results.append(feed(detector, OPEN, t + 1.0, t + 2.25, fps=4))
+        t += 2.5
+    warnings = [r for r in results if r.state is State.DROWSINESS_WARNING]
+    assert warnings
+    for result in warnings:
+        assert result.closed_seconds < DEFAULTS.min_closed_seconds
+        assert result.warning_reasons == (PERCLOS,)
+
+
+def closure_after_open_history(detector):
+    """10 s open, then 6 s closed: PERCLOS = 6/16 = 0.375 at the end of the closure."""
+    feed(detector, OPEN, 0, 9.75, fps=4)
+    return feed(detector, CLOSED, 10, 16, fps=4)
+
+
+def test_both_warning_reasons_can_be_active_at_once():
+    detector = DrowsinessDetector(make_config(perclos_enabled=True), alerts_enabled=True)
+    result = closure_after_open_history(detector)
+    assert result.state is State.DROWSINESS_WARNING
+    assert result.closed_seconds == 6.0
+    assert result.perclos == 0.375
+    assert result.warning_reasons == (CONTINUOUS, PERCLOS)
+
+
+def test_closure_warning_is_held_by_perclos_after_eyes_reopen():
+    detector = DrowsinessDetector(make_config(perclos_enabled=True), alerts_enabled=True)
+    closure_after_open_history(detector)
+    # Eyes open for 0.25 s >= min_open_seconds: the closure itself has ended ...
+    reopened = feed(detector, OPEN, 16.25, 16.5, fps=4)
+    assert reopened.closed_seconds == 0
+    # ... but the recent history still warns, now only because of PERCLOS.
+    assert reopened.state is State.DROWSINESS_WARNING
+    assert reopened.warning_reasons == (PERCLOS,)
+    assert reopened.alert is True
+    # Once PERCLOS drops below 0.3 (6 s closed / > 20 s observed) it is AWAKE again.
+    recovered = feed(detector, OPEN, 16.75, 21, fps=4)
+    assert recovered.state is State.AWAKE
+    assert recovered.warning_reasons == ()
+
+
+def test_warning_reason_is_kept_during_short_face_loss(detector):
+    feed(detector, CLOSED, 0, 1.5, fps=4)
+    dropout = detector.update(None, now=1.75)
+    assert dropout.state is State.DROWSINESS_WARNING
+    assert dropout.warning_reasons == (CONTINUOUS,)
+
+
+def test_warning_reasons_serialize_as_strings():
+    detector = DrowsinessDetector(make_config(perclos_enabled=True), alerts_enabled=True)
+    data = closure_after_open_history(detector).to_dict()
+    assert data["state"] == "DROWSINESS_WARNING"
+    assert data["warning_reasons"] == ["continuous_closure", "perclos"]
+    awake = DrowsinessDetector(make_config(), alerts_enabled=True).update(OPEN, now=0)
+    assert awake.to_dict()["warning_reasons"] == []

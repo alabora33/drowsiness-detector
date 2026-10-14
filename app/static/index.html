@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drowsiness Detector</title>
+<style>
+  :root { --ok: #1b7f3b; --warn: #b26a00; --bad: #b3261e; --muted: #666; }
+  body { font-family: system-ui, sans-serif; margin: 0 auto; padding: 16px; max-width: 720px; background: #fafafa; color: #222; }
+  h1 { font-size: 1.2rem; margin: 0 0 12px; }
+  video { width: 100%; max-width: 640px; background: #000; border-radius: 6px; transform: scaleX(-1); }
+  .controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 12px 0; }
+  button { padding: 8px 16px; font-size: 1rem; cursor: pointer; }
+  #state { font-size: 1.6rem; font-weight: 700; padding: 10px 14px; border-radius: 6px; color: #fff; background: var(--muted); }
+  #state.AWAKE { background: var(--ok); }
+  #state.EYES_CLOSED { background: var(--warn); }
+  #state.DROWSINESS_WARNING { background: var(--bad); animation: blink 0.6s step-end infinite; }
+  @keyframes blink { 50% { opacity: 0.6; } }
+  table { border-collapse: collapse; margin-top: 12px; }
+  td { padding: 3px 12px 3px 0; }
+  td:first-child { color: var(--muted); }
+  #message { margin-top: 12px; min-height: 1.4em; color: var(--bad); }
+  .note { color: var(--muted); font-size: 0.85rem; margin-top: 16px; }
+</style>
+</head>
+<body>
+<h1>Drowsiness Detector</h1>
+<video id="video" autoplay playsinline muted></video>
+<div class="controls">
+  <button id="start">Başlat</button>
+  <button id="stop" disabled>Durdur</button>
+  <label>Hedef FPS <input id="fps" type="number" min="1" step="1" value="10" style="width: 4em"></label>
+</div>
+<div id="state">BEKLEMEDE</div>
+<table>
+  <tr><td>EAR</td><td id="ear">-</td></tr>
+  <tr><td>Kapalı süre</td><td id="closed">-</td></tr>
+  <tr><td>PERCLOS</td><td id="perclos">-</td></tr>
+  <tr><td>Uyarı sebebi</td><td id="reason">-</td></tr>
+  <tr><td>Yüz sayısı</td><td id="faces">-</td></tr>
+  <tr><td>Gerçek FPS / işlem</td><td id="perf">-</td></tr>
+</table>
+<div id="message"></div>
+<p class="note">Görüntü yalnızca bu sunucuya gönderilir; harici bir servise aktarılmaz.
+Bu araç tıbbi teşhis koymaz, sadece göz kapanmasına dayalı bir uyarı üretir.</p>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const video = $("video"), canvas = document.createElement("canvas");
+
+let ws = null, stream = null, settings = null;
+let running = false, inFlight = false, sentAt = 0, timer = null, watchdog = null;
+let frameTimes = [], audio = null, lastBeep = 0;
+
+function showMessage(text) { $("message").textContent = text || ""; }
+
+function cameraErrorText(err) {
+  switch (err && err.name) {
+    case "NotAllowedError": return "Kamera izni reddedildi. Adres çubuğundaki kamera simgesinden izin verip tekrar deneyin.";
+    case "NotFoundError": return "Kamera bulunamadı. Bir kamera bağlı olduğundan emin olun.";
+    case "NotReadableError": return "Kamera başka bir uygulama tarafından kullanılıyor olabilir.";
+    default: return "Kamera açılamadı: " + (err && err.message ? err.message : err);
+  }
+}
+
+async function start() {
+  showMessage("");
+  if (!window.isSecureContext || !navigator.mediaDevices) {
+    showMessage("Kamera için güvenli bağlam gerekir: sayfayı http://localhost:<port> veya HTTPS üzerinden açın.");
+    return;
+  }
+  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+  ws.binaryType = "arraybuffer";
+  ws.onmessage = onMessage;
+  ws.onclose = () => { if (running) { showMessage("Sunucu bağlantısı kesildi."); stop(); } };
+  ws.onerror = () => showMessage("Sunucuya bağlanılamadı.");
+  $("start").disabled = true;
+}
+
+async function openCamera() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: settings.camera.frame_width }, height: { ideal: settings.camera.frame_height } },
+      audio: false,
+    });
+  } catch (err) {
+    showMessage(cameraErrorText(err));
+    stop();
+    return;
+  }
+  stream.getVideoTracks()[0].addEventListener("ended", () => {
+    showMessage("Kamera bağlantısı kesildi.");
+    stop();
+  });
+  video.srcObject = stream;
+  await video.play();
+  running = true;
+  $("stop").disabled = false;
+  scheduleNext(0);
+}
+
+function onMessage(event) {
+  const msg = JSON.parse(event.data);
+  if (msg.type === "config") {
+    settings = msg;
+    const fps = $("fps");
+    fps.max = settings.camera.max_fps;
+    fps.value = Math.min(Number(fps.value) || settings.camera.max_fps, settings.camera.max_fps);
+    openCamera();
+    return;
+  }
+  inFlight = false;
+  clearTimeout(watchdog);
+  if (msg.type === "error") {
+    showMessage("Kare reddedildi: " + msg.message);
+  } else if (msg.type === "result") {
+    render(msg);
+  }
+  if (running) scheduleNext(Math.max(0, 1000 / currentFps() - (performance.now() - sentAt)));
+}
+
+function currentFps() {
+  const max = settings ? settings.camera.max_fps : 10;
+  return Math.min(Math.max(Number($("fps").value) || 1, 1), max);
+}
+
+function scheduleNext(delayMs) {
+  clearTimeout(timer);
+  timer = setTimeout(sendFrame, delayMs);
+}
+
+function sendFrame() {
+  if (!running || inFlight || !ws || ws.readyState !== WebSocket.OPEN || video.videoWidth === 0) {
+    if (running) scheduleNext(100);
+    return;
+  }
+  const width = Math.min(video.videoWidth, settings.camera.frame_width);
+  canvas.width = width;
+  canvas.height = Math.round(video.videoHeight * width / video.videoWidth);
+  canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+  inFlight = true;
+  canvas.toBlob((blob) => {
+    if (!blob || !running || ws.readyState !== WebSocket.OPEN) { inFlight = false; return; }
+    sentAt = performance.now();
+    ws.send(blob);
+    // Backpressure: only one frame in flight. If the server stops answering, say so.
+    watchdog = setTimeout(() => showMessage("Sunucu yanıt vermiyor..."), 5000);
+  }, "image/jpeg", settings.camera.jpeg_quality);
+}
+
+function warningReasonText(r) {
+  const reasons = r.warning_reasons || [];
+  const closure = reasons.includes("continuous_closure");
+  const perclos = reasons.includes("perclos");
+  const percent = r.perclos === null ? "" : " (" + Math.round(r.perclos * 100) + "%)";
+  if (closure && perclos) return "İki koşul birden: uzun süreli göz kapanması ve yüksek PERCLOS" + percent;
+  if (closure) return "Uzun süreli göz kapanması";
+  if (perclos) return "Yüksek PERCLOS" + percent;
+  return "-";
+}
+
+function render(r) {
+  const labels = { AWAKE: "UYANIK", EYES_CLOSED: "GÖZLER KAPALI", DROWSINESS_WARNING: "UYUKLAMA UYARISI", NO_FACE_DETECTED: "YÜZ YOK" };
+  const state = $("state");
+  state.className = r.state;
+  state.textContent = labels[r.state] || r.state;
+  $("ear").textContent = r.ear === null ? "-" : r.ear.toFixed(3);
+  $("closed").textContent = r.closed_seconds.toFixed(1) + " sn";
+  $("perclos").textContent = r.perclos === null ? "hazırlanıyor" : Math.round(r.perclos * 100) + "%";
+  $("faces").textContent = r.face_count;
+  $("reason").textContent = warningReasonText(r);
+
+  const now = performance.now();
+  frameTimes.push(now);
+  while (frameTimes.length && now - frameTimes[0] > 2000) frameTimes.shift();
+  $("perf").textContent = (frameTimes.length / 2).toFixed(1) + " fps / " + r.processing_ms + " ms";
+
+  const notes = [];
+  if (r.low_light) notes.push("Ortam çok karanlık; tespit güvenilir olmayabilir.");
+  if (r.face_count > 1) notes.push("Birden fazla yüz var; en büyük yüz takip ediliyor.");
+  showMessage(notes.join(" "));
+  if (r.alert && settings.alerts.sound) beep();
+}
+
+function beep() {
+  const now = performance.now();
+  if (now - lastBeep < 1000) return;
+  lastBeep = now;
+  audio = audio || new AudioContext();
+  const osc = audio.createOscillator();
+  osc.frequency.value = 880;
+  osc.connect(audio.destination);
+  osc.start();
+  osc.stop(audio.currentTime + 0.25);
+}
+
+function stop() {
+  running = false;
+  inFlight = false;
+  clearTimeout(timer);
+  clearTimeout(watchdog);
+  if (stream) stream.getTracks().forEach((t) => t.stop());
+  stream = null;
+  if (ws && ws.readyState <= WebSocket.OPEN) ws.close();
+  ws = null;
+  $("start").disabled = false;
+  $("stop").disabled = true;
+  $("state").className = "";
+  $("state").textContent = "BEKLEMEDE";
+}
+
+$("start").addEventListener("click", start);
+$("stop").addEventListener("click", () => { showMessage(""); stop(); });
+</script>
+</body>
+</html>

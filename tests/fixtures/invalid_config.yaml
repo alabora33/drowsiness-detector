@@ -15,6 +15,7 @@ detection:
   min_closed_seconds: 1.5
   min_open_seconds: 0.2
   no_face_grace_seconds: 1.0
+  low_light_threshold: 40
   perclos:
     enabled: true
     window_seconds: 30
