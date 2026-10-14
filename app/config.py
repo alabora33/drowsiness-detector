@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from collections.abc import Mapping
+from collections.abc import Hashable, Mapping
 from pathlib import Path
 from typing import Literal
 
@@ -25,10 +25,42 @@ class ConfigError(Exception):
     """Raised when a configuration file is missing, malformed or invalid."""
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """SafeLoader that rejects duplicate mapping keys.
+
+    Plain PyYAML silently keeps the last value when a key is repeated, so a
+    second `ear_threshold:` further down the file would win unnoticed.
+    """
+
+
+def _construct_unique_mapping(loader: _UniqueKeyLoader, node: yaml.MappingNode, deep=False):
+    seen = set()
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if not isinstance(key, Hashable):
+            continue  # construct_mapping() below reports unhashable keys itself
+        if key in seen:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r}",
+                key_node.start_mark,
+            )
+        seen.add(key)
+    return loader.construct_mapping(node, deep=deep)
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping
+)
+
+
 class _Section(BaseModel):
-    # Unknown keys are rejected so a typo like "ear_treshold" fails loudly
-    # instead of silently falling back to some other value.
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # extra="forbid": unknown keys are rejected so a typo like "ear_treshold"
+    # fails loudly instead of silently falling back to some other value.
+    # strict=True: no type coercion, e.g. `max_faces: true` or `port: "8000"`
+    # are errors. YAML integers are still accepted for float fields.
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
 class ServerConfig(_Section):
@@ -57,6 +89,7 @@ class DetectionConfig(_Section):
     min_face_confidence: float = Field(ge=0, le=1)
     ear_threshold: float = Field(ge=0.05, le=0.4)
     min_closed_seconds: float = Field(ge=0.2, le=10)
+    min_open_seconds: float = Field(ge=0, le=2)
     no_face_grace_seconds: float = Field(ge=0, le=10)
     low_light_threshold: float = Field(ge=0, le=255)
     perclos: PerclosConfig
@@ -93,14 +126,14 @@ def _format_validation_error(path: Path, error: ValidationError) -> str:
 def load_config(path: str | Path) -> AppConfig:
     path = Path(path)
     try:
-        text = path.read_text(encoding="utf-8")
+        # Loading from the file (not a string) makes YAML errors name the file.
+        # Safe: _UniqueKeyLoader is a SafeLoader, it never builds arbitrary objects.
+        with path.open(encoding="utf-8") as stream:
+            data = yaml.load(stream, Loader=_UniqueKeyLoader)
     except FileNotFoundError:
         raise ConfigError(f"Config file not found: {path}") from None
     except OSError as exc:
         raise ConfigError(f"Cannot read config file {path}: {exc}") from None
-
-    try:
-        data = yaml.safe_load(text)
     except yaml.YAMLError as exc:
         raise ConfigError(f"Invalid YAML in {path}: {exc}") from None
 

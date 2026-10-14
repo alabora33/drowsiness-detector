@@ -87,6 +87,7 @@ def test_open_eyes_frame(client):
     assert result["face_count"] == 1
     assert result["alert"] is False
     assert result["low_light"] is False
+    assert result["warning_reasons"] == []
 
 
 def test_prolonged_closure_raises_alert(client, fake, clock):
@@ -98,6 +99,19 @@ def test_prolonged_closure_raises_alert(client, fake, clock):
         result = send_frame(ws)
     assert result["state"] == "DROWSINESS_WARNING"
     assert result["alert"] is True
+    assert result["warning_reasons"] == ["continuous_closure"]
+
+
+def test_websocket_reports_both_warning_reasons(client, fake, clock):
+    fake.face = CLOSED
+    with client.websocket_connect("/ws") as ws:
+        ws.receive_json()
+        for _ in range(33):  # 16 s of closed eyes at 2 fps: PERCLOS has enough data
+            result = send_frame(ws)
+            clock.now += 0.5
+    assert result["state"] == "DROWSINESS_WARNING"
+    assert result["perclos"] == 1.0
+    assert result["warning_reasons"] == ["continuous_closure", "perclos"]
 
 
 def test_each_connection_has_its_own_state(client, fake, clock):
