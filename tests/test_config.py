@@ -98,6 +98,42 @@ def test_invalid_port_type(tmp_path):
         load_config(path)
 
 
+def test_duplicate_nested_key_is_rejected(tmp_path):
+    text = (REPO_ROOT / "configs/default.yaml").read_text()
+    duplicated = "  ear_threshold: 0.18\n  ear_threshold: 0.35"
+    path = tmp_path / "dup.yaml"
+    path.write_text(text.replace("  ear_threshold: 0.18", duplicated))
+    with pytest.raises(ConfigError, match="duplicate key 'ear_threshold'") as exc:
+        load_config(path)
+    # The error names the file and points at the second occurrence.
+    assert f'"{path}", line 19' in str(exc.value)
+
+
+def test_duplicate_top_level_key_is_rejected(tmp_path):
+    text = (REPO_ROOT / "configs/default.yaml").read_text()
+    path = tmp_path / "dup.yaml"
+    path.write_text(text + "\nlogging:\n  level: DEBUG\n")
+    with pytest.raises(ConfigError, match="duplicate key 'logging'"):
+        load_config(path)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["detection__max_faces", "server__port", "detection__ear_threshold", "camera__max_fps"],
+)
+def test_boolean_is_not_accepted_as_a_number(tmp_path, field):
+    path = write_config(tmp_path, **{field: True})
+    with pytest.raises(ConfigError, match=field.replace("__", ".")):
+        load_config(path)
+
+
+def test_integers_are_still_valid_for_float_fields(tmp_path):
+    path = write_config(tmp_path, detection__min_closed_seconds=2, camera__max_fps=15)
+    config = load_config(path)
+    assert config.detection.min_closed_seconds == 2.0
+    assert config.camera.max_fps == 15.0
+
+
 def test_config_is_immutable():
     config = load_config(REPO_ROOT / "configs/default.yaml")
     with pytest.raises(ValueError):
