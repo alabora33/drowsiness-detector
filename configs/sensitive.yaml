@@ -17,6 +17,7 @@ detection:
   min_face_confidence: 0.5
   ear_threshold: 0.21
   min_closed_seconds: 0.8
+  min_open_seconds: 0.3
   no_face_grace_seconds: 0.5
   low_light_threshold: 40
   perclos:

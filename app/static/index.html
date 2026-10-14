@@ -36,6 +36,7 @@
   <tr><td>EAR</td><td id="ear">-</td></tr>
   <tr><td>Kapalı süre</td><td id="closed">-</td></tr>
   <tr><td>PERCLOS</td><td id="perclos">-</td></tr>
+  <tr><td>Uyarı sebebi</td><td id="reason">-</td></tr>
   <tr><td>Yüz sayısı</td><td id="faces">-</td></tr>
   <tr><td>Gerçek FPS / işlem</td><td id="perf">-</td></tr>
 </table>
@@ -148,6 +149,17 @@ function sendFrame() {
   }, "image/jpeg", settings.camera.jpeg_quality);
 }
 
+function warningReasonText(r) {
+  const reasons = r.warning_reasons || [];
+  const closure = reasons.includes("continuous_closure");
+  const perclos = reasons.includes("perclos");
+  const percent = r.perclos === null ? "" : " (" + Math.round(r.perclos * 100) + "%)";
+  if (closure && perclos) return "İki koşul birden: uzun süreli göz kapanması ve yüksek PERCLOS" + percent;
+  if (closure) return "Uzun süreli göz kapanması";
+  if (perclos) return "Yüksek PERCLOS" + percent;
+  return "-";
+}
+
 function render(r) {
   const labels = { AWAKE: "UYANIK", EYES_CLOSED: "GÖZLER KAPALI", DROWSINESS_WARNING: "UYUKLAMA UYARISI", NO_FACE_DETECTED: "YÜZ YOK" };
   const state = $("state");
@@ -157,6 +169,7 @@ function render(r) {
   $("closed").textContent = r.closed_seconds.toFixed(1) + " sn";
   $("perclos").textContent = r.perclos === null ? "hazırlanıyor" : Math.round(r.perclos * 100) + "%";
   $("faces").textContent = r.face_count;
+  $("reason").textContent = warningReasonText(r);
 
   const now = performance.now();
   frameTimes.push(now);
