@@ -21,6 +21,43 @@
   td:first-child { color: var(--muted); }
   #message { margin-top: 12px; min-height: 1.4em; color: var(--bad); }
   .note { color: var(--muted); font-size: 0.85rem; margin-top: 16px; }
+  
+  #settings-panel {
+    margin-top: 20px;
+    padding: 16px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background: white;
+  }
+
+  #settings-panel summary {
+    cursor: pointer;
+    font-weight: 600;
+  }
+
+  #settings-form {
+    display: grid;
+    gap: 12px;
+    margin-top: 16px;
+  }
+
+  #settings-form label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+  }
+
+  #settings-form input[type="number"] {
+    width: 90px;
+    padding: 7px;
+  }
+
+  #settings-message {
+    margin-top: 10px;
+    font-size: 0.9rem;
+  }
+
 </style>
 </head>
 <body>
@@ -40,6 +77,62 @@
   <tr><td>Yüz sayısı</td><td id="faces">-</td></tr>
   <tr><td>Gerçek FPS / işlem</td><td id="perf">-</td></tr>
 </table>
+
+<details id="settings-panel">
+  <summary>Ayarlar</summary>
+
+  <form id="settings-form">
+    <label>EAR eşiği
+      <input name="ear_threshold" type="number"
+             min="0.05" max="0.4" step="0.01" required>
+    </label>
+
+    <label>Göz kapanma süresi (sn)
+      <input name="min_closed_seconds" type="number"
+             min="0.2" max="10" step="0.1" required>
+    </label>
+
+    <label>Göz açılma süresi (sn)
+      <input name="min_open_seconds" type="number"
+             min="0" max="2" step="0.05" required>
+    </label>
+
+    <label>Yüz kaybı toleransı (sn)
+      <input name="no_face_grace_seconds" type="number"
+             min="0" max="10" step="0.1" required>
+    </label>
+
+    <label>Düşük ışık eşiği
+      <input name="low_light_threshold" type="number"
+             min="0" max="255" step="1" required>
+    </label>
+
+    <label>
+      <input name="perclos_enabled" type="checkbox">
+      PERCLOS etkin
+    </label>
+
+    <label>PERCLOS penceresi (sn)
+      <input name="perclos_window_seconds" type="number"
+             min="5" max="300" step="1" required>
+    </label>
+
+    <label>PERCLOS uyarı eşiği (%)
+      <input name="perclos_threshold" type="number"
+             min="1" max="99" step="1" required>
+    </label>
+
+    <div class="controls">
+      <button type="submit" id="save-settings">Kaydet</button>
+      <button type="button" id="reset-settings">
+        Varsayılana dön
+      </button>
+    </div>
+  </form>
+
+  <div id="settings-message" role="status"></div>
+</details>
+
 <div id="message"></div>
 <p class="note">Görüntü yalnızca bu sunucuya gönderilir; harici bir servise aktarılmaz.
 Bu araç tıbbi teşhis koymaz, sadece göz kapanmasına dayalı bir uyarı üretir.</p>
@@ -212,6 +305,112 @@ function stop() {
 
 $("start").addEventListener("click", start);
 $("stop").addEventListener("click", () => { showMessage(""); stop(); });
+
+const settingsForm = $("settings-form");
+const settingsMessage = $("settings-message");
+
+function setSettingsMessage(text) {
+  settingsMessage.textContent = text;
+}
+
+function fillSettings(data) {
+  const d = data.detection;
+  const p = d.perclos;
+  const field = (name) => settingsForm.elements.namedItem(name);
+
+  field("ear_threshold").value = d.ear_threshold;
+  field("min_closed_seconds").value = d.min_closed_seconds;
+  field("min_open_seconds").value = d.min_open_seconds;
+  field("no_face_grace_seconds").value = d.no_face_grace_seconds;
+  field("low_light_threshold").value = d.low_light_threshold;
+  field("perclos_enabled").checked = p.enabled;
+  field("perclos_window_seconds").value = p.window_seconds;
+  field("perclos_threshold").value = Math.round(p.threshold * 100);
+}
+
+async function fetchSettings() {
+  const response = await fetch("/api/settings");
+  if (!response.ok) throw new Error("Ayarlar okunamadı.");
+  fillSettings(await response.json());
+}
+
+function collectSettings() {
+  const field = (name) => settingsForm.elements.namedItem(name);
+  const value = (name) => Number(field(name).value);
+
+  return {
+    ear_threshold: value("ear_threshold"),
+    min_closed_seconds: value("min_closed_seconds"),
+    min_open_seconds: value("min_open_seconds"),
+    no_face_grace_seconds: value("no_face_grace_seconds"),
+    low_light_threshold: value("low_light_threshold"),
+    perclos: {
+      enabled: field("perclos_enabled").checked,
+      window_seconds: value("perclos_window_seconds"),
+      threshold: value("perclos_threshold") / 100,
+    },
+  };
+}
+
+function setSettingsBusy(busy) {
+  $("save-settings").disabled = busy;
+  $("reset-settings").disabled = busy;
+}
+
+settingsForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  setSettingsBusy(true);
+  setSettingsMessage("Kaydediliyor...");
+
+  try {
+    const response = await fetch("/api/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(collectSettings()),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Ayarlar kaydedilemedi.");
+    }
+
+    await fetchSettings();
+    setSettingsMessage("Ayarlar kaydedildi ve aktif edildi.");
+  } catch (error) {
+    setSettingsMessage(String(error.message || error));
+  } finally {
+    setSettingsBusy(false);
+  }
+});
+
+$("reset-settings").addEventListener("click", async () => {
+  if (!confirm("Başlangıç ayarlarına dönülsün mü?")) return;
+
+  setSettingsBusy(true);
+
+  try {
+    const response = await fetch("/api/settings/reset", {
+      method: "POST",
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Ayarlar sıfırlanamadı.");
+    }
+
+    await fetchSettings();
+    setSettingsMessage("Başlangıç ayarlarına dönüldü.");
+  } catch (error) {
+    setSettingsMessage(String(error.message || error));
+  } finally {
+    setSettingsBusy(false);
+  }
+});
+
+fetchSettings().catch((error) => {
+  setSettingsMessage("Ayarlar yüklenemedi: " + error.message);
+});
+
 </script>
 </body>
 </html>
