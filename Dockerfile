@@ -48,6 +48,8 @@ LABEL org.opencontainers.image.title="drowsiness-detector" \
       org.opencontainers.image.version="${APP_VERSION}" \
       io.github.alabora33.drowsiness-detector.config="${CONFIG_PATH}"
 
+RUN mkdir -p /app/data && chown app:app /app/data
+ENV APP_SETTINGS_PATH=/app/data/settings.yaml
 USER app
 # Default port; must match server.port in the active configuration.
 EXPOSE 8000
