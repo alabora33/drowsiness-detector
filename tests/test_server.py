@@ -157,3 +157,137 @@ def test_text_message_is_rejected(client):
         ws.send_text("hello")
         assert ws.receive_json()["type"] == "error"
         assert send_frame(ws)["type"] == "result"
+
+
+def test_get_settings(client):
+    response = client.get("/api/settings")
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["detection"]["ear_threshold"] == 0.18
+    assert data["detection"]["min_closed_seconds"] == 1.5
+    assert data["detection"]["perclos"]["enabled"] is True
+    assert data["alerts"]["sound"] is True
+
+    assert "model_path" not in data["detection"]
+    assert "server" not in data
+
+
+def test_settings_api_save_and_reset(monkeypatch, tmp_path, fake):
+    from fastapi.testclient import TestClient
+
+    from app.config import load_config
+    from app.server import create_app
+
+    settings_file = tmp_path / "settings.yaml"
+    monkeypatch.setenv("APP_SETTINGS_PATH", str(settings_file))
+
+    config = load_config("configs/default.yaml")
+    app = create_app(config, fake)
+    client = TestClient(app)
+
+    # Geçerli ayarı kaydet.
+    response = client.patch(
+        "/api/settings",
+        json={"ear_threshold": 0.23},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["detection"]["ear_threshold"] == 0.23
+    assert settings_file.exists()
+
+    # Kaydedilen ayar GET üzerinden okunabilmeli.
+    response = client.get("/api/settings")
+    assert response.status_code == 200
+    assert response.json()["detection"]["ear_threshold"] == 0.23
+
+    # Geçersiz değer reddedilmeli.
+    response = client.patch(
+        "/api/settings",
+        json={"ear_threshold": 0.90},
+    )
+    assert response.status_code == 422
+
+    # Hatalı istek önceki geçerli ayarı değiştirmemeli.
+    response = client.get("/api/settings")
+    assert response.json()["detection"]["ear_threshold"] == 0.23
+
+    # Başlangıç ayarlarına dön.
+    response = client.post("/api/settings/reset")
+    assert response.status_code == 200
+
+    response = client.get("/api/settings")
+    assert response.json()["detection"]["ear_threshold"] == (config.detection.ear_threshold)
+
+
+def test_settings_update_while_websocket_connected(monkeypatch, tmp_path, fake):
+    from fastapi.testclient import TestClient
+
+    from app.config import load_config
+    from app.server import create_app
+
+    settings_file = tmp_path / "settings.yaml"
+    monkeypatch.setenv("APP_SETTINGS_PATH", str(settings_file))
+
+    config = load_config("configs/default.yaml")
+    app = create_app(config, fake)
+    client = TestClient(app)
+
+    with client.websocket_connect("/ws") as ws:
+        initial = ws.receive_json()
+        assert initial["type"] == "config"
+
+        response = client.patch(
+            "/api/settings",
+            json={"ear_threshold": 0.23},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["config_version"] == 1
+
+        response = client.get("/api/settings")
+        assert response.json()["detection"]["ear_threshold"] == 0.23
+
+
+def test_websocket_uses_updated_ear_threshold(monkeypatch, tmp_path, fake, clock):
+    settings_file = tmp_path / "settings.yaml"
+    monkeypatch.setenv("APP_SETTINGS_PATH", str(settings_file))
+
+    config = load_config("configs/default.yaml")
+    app = create_app(config, fake, clock=clock)
+    client = TestClient(app)
+
+    # İki eşik arasında kalan bir EAR değeri seçiyoruz.
+    fake.face = synthetic_face(ear=0.20)
+
+    with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()["type"] == "config"
+
+        # Başlangıç eşiği 0.18, EAR 0.20:
+        # Gözler açık kabul edilmeli.
+        before = send_frame(ws)
+
+        assert before["type"] == "result"
+        assert before["ear"] == pytest.approx(0.20)
+        assert before["state"] == "AWAKE"
+
+        # WebSocket açıkken eşiği 0.23'e yükselt.
+        response = client.patch(
+            "/api/settings",
+            json={"ear_threshold": 0.23},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["config_version"] == 1
+
+        # Aynı EAR değeri, yeni eşikle kapalı sayılmalı.
+        after = send_frame(ws)
+
+        assert after["type"] == "result"
+        assert after["ear"] == pytest.approx(0.20)
+        assert after["state"] == "EYES_CLOSED"
+
+        # Kaydetme sırasında kamera bağlantısı kopmamalı.
+        assert settings_file.exists()
