@@ -1,200 +1,226 @@
-# Debian kurulum ve dağıtım kılavuzu
+# Drowsiness Detector – Kurulum ve Kullanım Kılavuzu
 
-Bu kılavuz drowsiness-detector'ı Debian tabanlı bir sistemde (doğal Debian veya Windows üzerinde
-WSL2 Debian) Docker ile ya da doğrudan Python ile çalıştırmayı anlatır. Genel bakış ve mimari için
-[README](../README.md).
+Bu dokümanda Drowsiness Detector uygulamasının Debian 13 ve Ubuntu ortamlarında nasıl kurulacağını ve çalıştırılacağını anlattım.
 
-## Desteklenen ortamlar
+Uygulama, bilgisayar kamerasından alınan görüntülerle gözlerin açık veya kapalı olduğunu takip eder. Gözler belirli bir süre kapalı kaldığında veya sık sık kapandığında kullanıcıya uyarı verir.
 
-| Ortam | Durum |
-|---|---|
-| Debian 13 (trixie), amd64 — Docker ile | Test edildi (WSL2 üzerinde) |
-| Debian 13 — doğrudan Python 3.13 ile | Test edildi |
-| Debian 12 (bookworm), amd64 — Docker ile | Desteklenir (imaj kendi Debian 13 tabanını taşır) |
-| Debian 12 — doğrudan Python ile | Önerilmez (sistem Python'u 3.11; bağımlılık kilidi 3.13 ile üretildi) → Docker kullanın |
-| Windows 11 + WSL2 + Docker Desktop | Gerçek webcam ile manuel test edildi |
-| arm64 (Raspberry Pi vb.) | İmaj yayınlanmıyor |
+Uygulamayı Docker üzerinden veya doğrudan Python ile çalıştırabilirsiniz.
 
-Kamera her durumda **tarayıcı** tarafından açılır. Container'a `/dev/video0` gibi bir cihaz
-bağlamak gerekmez; tarayıcı ile servis aynı makinede değilse bkz.
-[Uzak sunucuda çalıştırma](#uzak-sunucuda-çalıştırma).
+## 1. Sistem gereksinimleri
 
-## 1. Docker kurulumu (Debian)
+- Debian 13 veya Ubuntu (Docker için)
+- Docker veya Python 3.13
+- İlk kurulum için internet bağlantısı
+- Chrome veya Edge tarayıcısı
+- Kamera
 
-Docker'ın resmi apt deposundan:
+Uygulamayı Debian 13 ve Windows 11 üzerinde Ubuntu WSL2 ortamında test ettim. Gerçek kamera testlerini Windows bilgisayarda gerçekleştirdim.
+
+Kamera tarayıcı üzerinden kullanıldığı için Docker'a ayrıca kamera bağlamak gerekmiyor.
+
+## 2. Docker kurulumu
+
+Bilgisayarınızda Docker zaten kuruluysa bu adımı geçebilirsiniz.
+
+Debian veya Ubuntu terminalinde:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y ca-certificates curl
-sudo install -m 0755 -d /etc/apt/keyrings
-sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
-sudo chmod a+r /etc/apt/keyrings/docker.asc
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
-https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
-  | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-sudo apt-get update
-sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin
+sudo apt update
+sudo apt install -y docker.io
 ```
 
-Docker'ı `sudo` olmadan kullanmak için (oturumu kapatıp açın):
+Docker servisini başlatın:
 
 ```bash
-sudo usermod -aG docker "$USER"
+sudo systemctl enable --now docker
 ```
 
-Kontrol: `docker info` ve `docker buildx version`.
-
-**WSL2:** WSL içine Docker Engine kurmak yerine Windows'ta Docker Desktop kullanılabilir:
-Docker Desktop → Settings → Resources → WSL Integration → Debian'ı açın → Apply & Restart.
-Entegrasyonu açtıktan sonra `docker info` hata verirse Docker Desktop'ı yeniden başlatın.
-
-## 2. GHCR'dan hazır imajı çalıştırma
+Kurulumu kontrol edin:
 
 ```bash
-docker pull ghcr.io/alabora33/drowsiness-detector:0.1.0
-docker run -d --name drowsiness --restart unless-stopped \
-  -p 127.0.0.1:8000:8000 ghcr.io/alabora33/drowsiness-detector:0.1.0
+sudo docker --version
+sudo docker info
 ```
 
-- Tarayıcıda **http://localhost:8000** → **Başlat** → kamera iznini verin.
-- `--restart unless-stopped` makine yeniden başlayınca servisi otomatik başlatır.
-- Belirli bir yapıyı birebir sabitlemek için tag yerine digest kullanın
-  (`...drowsiness-detector@sha256:<digest>`; digest release iş akışının özetinde yazar).
-- Sürüm tag'leri: `X.Y.Z` değişmez; `X.Y` ve `latest` kayan tag'lerdir.
+Bu yöntem, dağıtımın paket deposundaki Docker sürümünü kurar. En güncel Docker Engine veya Buildx özellikleri gerektiğinde Docker'ın resmî deposundan kurulum tercih edilmelidir.
 
-Durdurma / güncelleme / geri alma:
+**Windows ve WSL2 kullananlar:** Docker Desktop kuruluysa WSL içine ayrıca Docker yüklemeniz gerekmez. Docker Desktop → Settings → Resources → WSL Integration bölümünden kullandığınız dağıtımı etkinleştirin.
+
+## 3. Uygulamayı Docker ile çalıştırma
+
+Önce yayınlanan Docker imajını indirin:
 
 ```bash
-docker rm -f drowsiness
-docker run -d --name drowsiness --restart unless-stopped \
-  -p 127.0.0.1:8000:8000 ghcr.io/alabora33/drowsiness-detector:<yeni-veya-eski-sürüm>
+sudo docker pull ghcr.io/alabora33/drowsiness-detector:0.1.0
 ```
 
-İsteğe bağlı sıkılaştırma (test edildi, uygulama salt-okunur dosya sistemiyle çalışır):
+Ardından uygulamayı başlatın:
 
 ```bash
-docker run -d --name drowsiness -p 127.0.0.1:8000:8000 \
-  --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
+sudo docker run -d \
+  --name drowsiness \
+  -p 127.0.0.1:8000:8000 \
   ghcr.io/alabora33/drowsiness-detector:0.1.0
 ```
 
-## 3. Kaynaktan imaj build etme (CONFIG_PATH)
+Tarayıcıda **http://localhost:8000** adresini açın.
+
+**Başlat** butonuna basıp kameraya izin verdiğinizde uygulama çalışmaya başlayacaktır.
+
+### Uygulamayı durdurma ve yeniden başlatma
+
+Durdurmak için:
 
 ```bash
-sudo apt-get install -y git
+sudo docker stop drowsiness
+```
+
+Yeniden başlatmak için:
+
+```bash
+sudo docker start drowsiness
+```
+
+Container'ı kaldırmak için:
+
+```bash
+sudo docker rm -f drowsiness
+```
+
+Logları görmek için:
+
+```bash
+sudo docker logs -f drowsiness
+```
+
+## 4. Uygulamayı farklı ayarlarla çalıştırma
+
+Projede üç farklı yapılandırma dosyası bulunmaktadır:
+
+| Dosya | Açıklama |
+|---|---|
+| `default.yaml` | Varsayılan ayarlar |
+| `sensitive.yaml` | Daha erken uyarı veren hassas profil |
+| `night-driving.yaml` | Gece sürüşü için hazırladığım deneysel profil |
+
+Gece sürüşü profilinde göz kapanma uyarısı süresini 1,5 saniyeden 1,2 saniyeye düşürdüm. Bu ayarlarla oluşturduğum Docker imajını gerçek kamerada test ettim.
+
+Önce projeyi indirin:
+
+```bash
+sudo apt install -y git
+
 git clone https://github.com/alabora33/drowsiness-detector.git
 cd drowsiness-detector
-
-docker build --build-arg CONFIG_PATH=configs/default.yaml       -t drowsiness-detector:default .
-docker build --build-arg CONFIG_PATH=configs/sensitive.yaml     -t drowsiness-detector:sensitive .
-docker build --build-arg CONFIG_PATH=configs/night-driving.yaml -t drowsiness-detector:night .
 ```
 
-- `CONFIG_PATH` **build context içinde** bir yol olmalı; kendi profilinizi `configs/` altına
-  koyun. Context dışındaki bir yol (`../my.yaml`) `"/my.yaml": not found` hatası verir.
-- Config build sırasında doğrulanır; geçersiz bir dosya build'i durdurur:
-  ```
-  Invalid configuration in /app/config/config.yaml:
-    - detection.ear_threshold: Input should be less than or equal to 0.4 (got 2.0)
-  ```
-- Hangi profilin gömüldüğünü görmek:
-  ```bash
-  docker inspect --format '{{index .Config.Labels "io.github.alabora33.drowsiness-detector.config"}}' drowsiness-detector:night
-  docker run --rm drowsiness-detector:night python -m app.config --check /app/config/config.yaml
-  ```
-- Build'i uçtan uca doğrulamak (geçici container ve ağ açar, sonra siler):
-  ```bash
-  ./scripts/container_smoke.sh drowsiness-detector:default
-  ```
-
-## 4. Çalışma anında config değiştirme
-
-Yeniden build etmeden başka bir dosya kullanmak için dosyayı salt-okunur bağlayıp `APP_CONFIG`
-ile gösterin:
+Gece sürüşü ayarlarıyla Docker imajı oluşturmak için:
 
 ```bash
-cp configs/default.yaml ~/my-profile.yaml      # düzenleyin
-docker run -d --name drowsiness -p 127.0.0.1:8000:8000 \
-  -v "$HOME/my-profile.yaml:/config/my-profile.yaml:ro" \
-  -e APP_CONFIG=/config/my-profile.yaml \
+sudo docker build \
+  --build-arg CONFIG_PATH=configs/night-driving.yaml \
+  -t drowsiness-detector:night .
+```
+
+Oluşturulan imajı çalıştırın:
+
+```bash
+sudo docker run --rm \
+  --name drowsiness-night \
+  -p 127.0.0.1:8080:8000 \
+  drowsiness-detector:night
+```
+
+Tarayıcıdan **http://localhost:8080** adresini açın.
+
+Farklı bir profil kullanmak için `CONFIG_PATH` değerini `configs/default.yaml` veya `configs/sensitive.yaml` olarak değiştirebilirsiniz.
+
+### İmajı yeniden oluşturmadan ayar değiştirme
+
+Proje klasöründeyken:
+
+```bash
+sudo docker run --rm \
+  --name drowsiness-custom \
+  -p 127.0.0.1:8080:8000 \
+  -v "$PWD/configs/night-driving.yaml:/config/custom.yaml:ro" \
+  -e APP_CONFIG=/config/custom.yaml \
   ghcr.io/alabora33/drowsiness-detector:0.1.0
-docker logs drowsiness | grep config          # "config /config/my-profile.yaml"
 ```
 
-Dosya açılışta doğrulanır; hatalıysa container `Startup failed: ...` mesajıyla exit 2 verir.
-Eşikler ortam değişkeniyle değil, sadece dosya ile verilir.
+Bu şekilde farklı ayarları imajı yeniden oluşturmadan kullanabilirsiniz.
 
-## 5. Docker'sız (doğrudan Python) çalıştırma — Debian 13
+## 5. Docker kullanmadan Python ile çalıştırma
+
+Uygulamayı Debian 13 üzerinde doğrudan Python 3.13 ile de çalıştırabilirsiniz. Ubuntu kullanıyorsanız Python 3.13'ün kurulu olması gerekir.
+
+Proje klasöründe gerekli paketleri yükleyin:
 
 ```bash
-sudo apt-get install -y python3-venv python3-pip libgles2 libegl1 libgl1 libglib2.0-0t64
+sudo apt update
+sudo apt install -y \
+  python3-venv python3-pip \
+  libgles2 libegl1 libgl1 libglib2.0-0t64
+```
+
+Python sanal ortamını oluşturun:
+
+```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m app.main
+source .venv/bin/activate
 ```
 
-- Depo kök dizininden çalıştırın (`configs/default.yaml` ve `models/` göreli yollardır).
-- `libgles2 libegl1`: MediaPipe'ın native kütüphanesi; `libgl1 libglib2.0-0t64`: OpenCV.
-  Eksikse açılışta `Startup failed: cannot load MediaPipe native libraries (...)` görülür.
-- Varsayılan `server.host: 0.0.0.0` servisi tüm arayüzlere açar; doğrudan çalıştırırken
-  kendi profilinizde `host: 127.0.0.1` kullanın.
-
-Testler: `.venv/bin/ruff check . && .venv/bin/pytest -v`
-
-## 6. Uzak sunucuda çalıştırma
-
-Tarayıcı kamerayı sadece güvenli bağlamda verir (`localhost` veya HTTPS). Servis başka bir
-Debian makinedeyse portu yerel ağa açmak yerine SSH tüneli kullanın:
+Gerekli kütüphaneleri yükleyin:
 
 ```bash
-ssh -L 8000:127.0.0.1:8000 kullanici@sunucu
+python -m pip install -r requirements.txt
 ```
 
-Ardından kendi bilgisayarınızda http://localhost:8000 açın. Kamera kendi bilgisayarınızın
-kamerasıdır; kareler tünel üzerinden sunucuya gider.
+Uygulamayı başlatın:
 
-## 7. Windows 11 + WSL2 + Docker Desktop ile kamera testi
+```bash
+python -m app.main
+```
 
-1. Docker Desktop'ın çalıştığından emin olun (WSL terminalinde `docker info`).
-2. WSL (Debian/Ubuntu) terminalinde imajı çalıştırın (bkz. bölüm 2 veya 3).
-3. **Windows'taki** tarayıcıda http://localhost:8000 açın; Docker Desktop portu Windows'a yönlendirir.
-4. **Başlat** → kamera izni. Gözler açıkken `UYANIK`, kapalıyken `GÖZLER KAPALI`,
-   ~1.5 sn sonra `UYUKLAMA UYARISI` ve "Uyarı sebebi" satırında gerekçe görülmeli.
-5. Loglar: `docker logs -f drowsiness` (`State ... reasons=...` satırları).
+Tarayıcıdan **http://localhost:8000** adresine girin.
 
-## 8. CI/CD ve release prosedürü
+Farklı bir profille çalıştırmak için:
 
-Ayrıntılar README'nin "CI/CD ve sürümleme" bölümünde. Özet:
+```bash
+APP_CONFIG=configs/night-driving.yaml python -m app.main
+```
 
-1. Değişiklikler pull request ile gelir; `ci.yml` lint, testler, Docker build, smoke testi ve
-   config kontrollerini çalıştırır. PR'lar imaj yayınlamaz.
-2. Yeni sürüm için `app/__init__.py` içindeki `__version__` bir PR ile artırılır ve merge edilir.
-3. `main` üzerinde `vX.Y.Z` tag'i gönderilir. `release.yml`: tag/sürüm/`main` kontrolü → tam CI →
-   fail-closed GHCR sürüm kontrolü → tek build → aynı imajla smoke testi → push → tag'lerin aynı
-   digest'i gösterdiği kontrolü → özet.
-4. İlk yayından sonra paket görünürlüğünü kontrol edin: GitHub → profil → Packages →
-   drowsiness-detector → Package settings. Public değilse anonim `docker pull` çalışmaz.
+## 6. Uygulamanın kullanımı
 
-## Sorun giderme
+Uygulama açıldıktan sonra **Başlat** butonuna basın ve kamera izni verin.
 
-| Belirti | Sebep / çözüm |
+Ekranda şu durumlar gösterilir:
+
+| Durum | Anlamı |
 |---|---|
-| `permission denied ... /var/run/docker.sock` | Kullanıcı `docker` grubunda değil: `sudo usermod -aG docker $USER`, oturumu yenileyin |
-| WSL'de `Cannot connect to the Docker daemon` | Docker Desktop kapalı veya WSL entegrasyonu kapalı (bölüm 1) |
-| `port is already allocated` | `-p 127.0.0.1:8080:8000` ile başka port kullanın |
-| `docker pull` → `denied` / `unauthorized` | Paket henüz yayınlanmamış veya private (bölüm 8, madde 4) |
-| Build: `"/....yaml": not found` | `CONFIG_PATH` build context dışında veya `.dockerignore` dışında; dosyayı `configs/` altına koyun |
-| Build: `Invalid configuration in ...` | Mesajdaki alanı düzeltin; bilinmeyen, tekrarlanan anahtar ve yanlış tipler reddedilir |
-| Container hemen kapanıyor | `docker logs drowsiness`; `Startup failed:` satırı sebebi (config, model, native kütüphane) söyler |
-| Container `unhealthy` | `docker inspect --format '{{json .State.Health}}' drowsiness`; config'te port değiştiyse `-p` eşlemesini de değiştirin |
-| Sayfa açılıyor, kamera açılmıyor | Güvenli bağlam (bölüm 6), tarayıcı kamera izni, kamerayı kullanan başka uygulama |
-| "Sunucu bağlantısı kesildi" | Container durdu veya yeniden başladı; `docker ps`, `docker logs` |
-| Durum hep `YÜZ YOK` | Yüz kadraja tam girmiyor veya ışık az (`low_light`); kamerayı yüz hizasına getirin |
-| Sık yanlış uyarı | Arayüzdeki EAR değerini gözler açıkken/kapalıyken gözleyip `ear_threshold`'u ikisinin arasına ayarlayın; "Uyarı sebebi" PERCLOS ise `perclos.threshold`'u artırın |
-| Doğrudan Python'da `libGLESv2.so.2` / `libGL.so.1` hatası | Bölüm 5'teki sistem paketlerini kurun |
+| UYANIK | Gözler açık |
+| GÖZLER KAPALI | Göz kapanması algılandı |
+| UYUKLAMA UYARISI | Göz kapanma süresi veya sıklığı uyarı seviyesine ulaştı |
+| YÜZ YOK | Kamera görüntüsünde yüz bulunamadı |
 
-## Bilinen sınırlamalar
+Varsayılan ayarlarda gözler yaklaşık 1,5 saniye kapalı kaldığında uyarı oluşur.
 
-README'deki [Bilinen sınırlamalar](../README.md#bilinen-sınırlamalar) bölümüne bakın. Özellikle:
-tek global eşik herkese uymaz, kötü ışık ve yan profil tespiti zayıflatır, servis kimlik
-doğrulamasızdır ve yerel kullanım içindir, araç tıbbi teşhis koymaz.
+Uygulama ayrıca PERCLOS yöntemiyle gözlerin belirli bir süre içindeki kapanma oranını hesaplar. Sık göz kapanmalarında da uyarı verebilir.
+
+Uyarının sebebi ekranda gösterilir.
+
+## 7. Windows 11 ve WSL2 üzerinde test
+
+Uygulamayı Windows 11 üzerinde Ubuntu WSL2 ve Docker Desktop ile test ettim.
+
+İzlediğim adımlar:
+
+1. Docker Desktop'ı başlattım.
+2. WSL2 terminalinde Docker imajını çalıştırdım.
+3. Windows tarayıcısından `http://localhost:8080` adresini açtım.
+4. Kameraya izin verdim.
+5. Gözlerimi belirli sürelerle kapatarak uyarıları kontrol ettim.
+
+Gece sürüşü profiliyle yaptığım Docker testinde **409 kamera karesi işlendi**. Yaklaşık 1,2 saniyelik göz kapanmalarında uyarı oluştu. PERCLOS kontrolü de çalıştı.
+
+Bu testle uygulamanın Docker içinde çalışırken tarayıcı kamerasından gelen görüntüleri işleyebildiğini doğruladım.
